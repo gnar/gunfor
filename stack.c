@@ -11,6 +11,3 @@ u64 pop() {
     return stack[--sp];
 }
 
-void clear() {
-    sp = 0;
-}

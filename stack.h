@@ -5,6 +5,5 @@
 
 void push(u64 value);
 u64 pop();
-void clear();
 
 #endif

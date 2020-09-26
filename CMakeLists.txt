@@ -3,4 +3,4 @@ project(untitled2 C)
 
 set(CMAKE_C_STANDARD 11)
 
-add_executable(untitled2 main.c memory.c memory.h dict.c dict.h interpret.c interpret.h stack.c stack.h)
+add_executable(untitled2 main.c memory.c memory.h dict.c dict.h stack.c stack.h)
