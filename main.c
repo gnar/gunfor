@@ -3,20 +3,72 @@
 #include <string.h>
 #include <stdlib.h>
 
-#include "memory.h"
-#include "dict.h"
-#include "stack.h"
+static const int HEAP_SIZE = 32768;
+
+// -- global state vars --
+typedef char u8;
+typedef unsigned long int u64;
 
 typedef void(*code_t)(); // codeword: a pointer to a builtin operation
 typedef code_t* instr_t; // instr_t: an 'instruction', i.e. a pointer to a codeword
 
-// -- global state vars --
-static instr_t *ip;
+static int quit_flag = 0;
+static int state = 0; // 0=interpreting 1=compiling
+static instr_t *ip = NULL;
+static u64 last = 0;
+static u64 heap_start = 0, heap_end = 0;
+static u64 here = 0;
+
+// --- heap ---
+char peek1(u64 addr) {
+    u8 *string = (u8 *) addr;
+    return *string;
+}
+
+void poke1(u64 addr, u8 value) {
+    *(u8 *) addr = value;
+}
+
+u64 peek(u64 addr) {
+    return *(u64 *) addr;
+}
+
+void poke(u64 addr, u64 value) {
+    *(u64 *) addr = value;
+}
+
+u64 allot(u64 n) {
+    u64 tmp = here;
+    here += n;
+    return tmp;
+}
+
+u64 make_aligned(u64 addr) {
+    return (addr + sizeof(u64) - 1) & ~(sizeof(u64) - 1);
+}
+
+u64 align() {
+    here = make_aligned(here);
+    return here;
+}
+
+u64 append(u64 value) {
+    u64 tmp = here;
+    poke(tmp, value);
+    here += sizeof(u64);
+    return tmp;
+}
+
+u64 append1(u8 value) {
+    u64 tmp = here;
+    poke1(tmp, value);
+    here += 1;
+    return tmp;
+}
 
 // --- return stack ---
-
 static instr_t *rstack[64] = {0};
-static int rsp = 0;
+static u64 rsp = 0;
 
 void renter(instr_t *ip1) {
     rstack[rsp++] = ip;
@@ -27,8 +79,70 @@ void rleave() {
     ip = rstack[--rsp];
 }
 
-int state = 0; // 0=interpreting 1=compiling
-int quit_flag = 0;
+// --- data stack ---
+static u64 dstack[1024];
+static u64 dsp = 0;
+
+void push(u64 value) {
+    dstack[dsp++] = value;
+}
+
+u64 pop() {
+    return dstack[--dsp];
+}
+
+// --- dictionary ---
+static const u64 HIDDEN_FLAG = (1ul << 63u);
+static const u64 IMMEDIATE_FLAG = (1ul << 62u);
+static const u64 MASK = ~(HIDDEN_FLAG | IMMEDIATE_FLAG);
+
+void create(const char *text, int is_immediate) {
+    u64 len = strlen(text);
+    align();
+    last = append(last);
+    append(len | (is_immediate ? IMMEDIATE_FLAG : 0));
+    for (int i = 0; i < len; ++i) {
+        append1(text[i]);
+    }
+    align();
+}
+
+u64 find(const char *text) {
+    u64 len = strlen(text);
+    u64 *it = (u64 *) last;
+    while (it) {
+        u64 *prev = (u64 *) it[0];
+        u64 len1 = it[1] & MASK;
+        const char *text1 = (const char *) &it[2];
+        if (len == len1 && 0 == strncmp(text, text1, len1)) {
+            return (u64) it;
+        }
+        it = prev;
+    }
+    return 0;
+}
+
+u64 to_tca(u64 addr) {
+    u64 len = ((u64 *) addr)[1] & MASK;
+    return (u64) make_aligned(addr + 2 * sizeof(u64) + len);
+}
+
+int is_immediate(u64 addr) {
+    return ((u64 *) addr)[1] & IMMEDIATE_FLAG ? 1 : 0;
+}
+
+void append_tca(const char *word) {
+    u64 addr = find(word);
+    assert(addr);
+    append(to_tca(addr));
+}
+
+void append_tca_with_val(const char *word, u64 value) {
+    append_tca(word);
+    append(value);
+}
+
+// --- builtins ---
 
 void docol(instr_t target) {
     instr_t data = &target[1];
@@ -124,6 +238,16 @@ void f_create() {
     create((const char *) text, 0);
 }
 
+void f_info() {
+    printf("data stack: <%lu>", dsp);
+    for (u64 i=0; i<dsp; ++i) {
+        printf(" %lu", dstack[i]);
+    }
+    printf("\n");
+    //printf("return stack: <%lu>\n", rsp);
+    printf("heap: %lu bytes allotted, %lu bytes free.\n", here - heap_start, heap_end - here);
+}
+
 void f_interpret() {
     u64 n = 0;
     const char *text = (const char *) word(&n);
@@ -166,18 +290,11 @@ void define_builtin(const char *word, code_t fn, int is_immediate) {
     append((u64) fn);
 }
 
-void append_tca(const char *word) {
-    u64 addr = find(word);
-    assert(addr);
-    append(to_tca(addr));
-}
-
-void append_tca_with_val(const char *word, u64 value) {
-    append_tca(word);
-    append(value);
-}
-
 int main() {
+    heap_start = (u64) malloc(HEAP_SIZE);
+    heap_end = heap_start + HEAP_SIZE;
+    here = (u64) heap_start;
+
     define_builtin("exit", f_exit, 0);
     define_builtin("branch", f_branch, 0);
     define_builtin("0branch", f_0branch, 0);
@@ -194,6 +311,7 @@ int main() {
     define_builtin("swap", f_swap, 0);
     define_builtin("+", f_add, 0);
     define_builtin(".", f_print, 0);
+    define_builtin("info", f_info, 0);
 
     define_builtin("quit", f_docol, 0);
     append_tca("interpret");
@@ -225,5 +343,6 @@ int main() {
         code();
     }
 
+    free((void*) heap_start);
     return 0;
 }
